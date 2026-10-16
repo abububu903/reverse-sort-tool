@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>反向排序工具（含 OCR）</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f5f6f8;
+    min-height: 100vh;
+    padding: 16px 24px 24px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  h1 { font-size: 20px; color: #333; }
+  .author { font-size: 13px; color: #999; }
+
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  }
+  .cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .col-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .col-title { font-size: 14px; font-weight: 600; color: #555; }
+  .line-count { font-size: 13px; color: #888; }
+  .line-count b { color: #2563eb; }
+  .link-clear {
+    border: none;
+    background: none;
+    padding: 0;
+    font-size: 13px;
+    color: #2563eb;
+    cursor: pointer;
+  }
+  .link-clear:hover { text-decoration: underline; }
+  textarea {
+    width: 100%;
+    min-height: 380px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 10px;
+    font-size: 14px;
+    line-height: 1.6;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    resize: vertical;
+    outline: none;
+  }
+  textarea:focus { border-color: #2563eb; }
+  #output {
+    background: #f9fafb;
+    resize: none;
+    cursor: default;
+  }
+  #output:focus { border-color: #ddd; }
+
+  .col-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .col-actions button { flex: 1; }
+  button {
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: opacity .15s;
+    white-space: nowrap;
+  }
+  button:hover { opacity: .85; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-copy { background: #059669; color: #fff; }
+  .btn-ocr-file { background: #dbeafe; color: #2563eb; }
+
+  .toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-80px);
+    background: #333;
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: transform .25s;
+    z-index: 200;
+    max-width: 80vw;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+
+  /* ---- 框选遮罩 ---- */
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.75);
+    z-index: 100;
+    display: none;
+    cursor: crosshair;
+  }
+  #overlay.active { display: block; }
+  #overlayImg {
+    position: absolute;
+    user-select: none;
+    -webkit-user-drag: none;
+    pointer-events: none;
+  }
+  #selRect {
+    position: absolute;
+    border: 2px dashed #4ade80;
+    background: rgba(74,222,128,.12);
+    display: none;
+    pointer-events: none;
+  }
+  #overlayTip {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #fff;
+    font-size: 14px;
+    background: rgba(0,0,0,.6);
+    padding: 8px 16px;
+    border-radius: 8px;
+    pointer-events: none;
+  }
+  #overlayCancel {
+    position: absolute;
+    top: 14px;
+    right: 20px;
+    background: #ef4444;
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 8px;
+  }
+  /* ---- 识别进度 ---- */
+  #ocrLoading {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.55);
+    z-index: 150;
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  #ocrLoading.active { display: flex; }
+  #ocrLoading .card-loading {
+    background: #fff;
+    border-radius: 12px;
+    padding: 24px 32px;
+    text-align: center;
+    min-width: 280px;
+  }
+  #ocrLoading .bar {
+    height: 8px;
+    background: #e5e7eb;
+    border-radius: 4px;
+    margin-top: 12px;
+    overflow: hidden;
+  }
+  #ocrLoading .bar-inner {
+    height: 100%;
+    width: 0;
+    background: #7c3aed;
+    transition: width .2s;
+  }
+  #ocrLoading p { font-size: 14px; color: #555; }
+
+  @media (max-width: 760px) {
+    .cols { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>反向排序工具</h1>
+    <span class="author">作者：abububu903</span>
+  </header>
+
+  <div class="card">
+    <div class="cols">
+      <div>
+        <div class="col-header">
+          <span class="col-title">输入（每行一条）</span>
+          <button class="link-clear" id="clearBtn">清空</button>
+        </div>
+        <textarea id="input" placeholder="在此粘贴或输入数据，每行一条…&#10;也可以直接 Ctrl+V 粘贴图片进行 OCR 识别"></textarea>
+        <div class="col-actions">
+          <button class="btn-ocr-file" id="ocrFileBtn">图片 OCR</button>
+          <button class="btn-primary" id="reverseBtn">反向排序</button>
+        </div>
+      </div>
+      <div>
+        <div class="col-header">
+          <span class="col-title">输出（反向结果）</span>
+          <span class="line-count">行数：<b id="outputCount">0</b></span>
+        </div>
+        <textarea id="output" readonly placeholder="结果会显示在这里"></textarea>
+        <div class="col-actions">
+          <button class="btn-copy" id="copyBtn" disabled>复制结果</button>
+        </div>
+      </div>
+    </div>
+    <input type="file" id="fileInput" accept="image/*" style="display:none">
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- 框选遮罩 -->
+<div id="overlay">
+  <img id="overlayImg" alt="">
+  <div id="selRect"></div>
+  <div id="overlayTip">拖动鼠标框选要识别的区域，松开后自动识别（Esc 取消）</div>
+  <button id="overlayCancel">✕ 取消</button>
+</div>
+
+<!-- OCR 进度 -->
+<div id="ocrLoading">
+  <div class="card-loading">
+    <p id="ocrStatus">正在识别…</p>
+    <div class="bar"><div class="bar-inner" id="ocrBar"></div></div>
+  </div>
+</div>
+
+<script>
+  const input = document.getElementById('input');
+  const output = document.getElementById('output');
+  const outputCount = document.getElementById('outputCount');
+  const toast = document.getElementById('toast');
+  const overlay = document.getElementById('overlay');
+  const overlayImg = document.getElementById('overlayImg');
+  const selRect = document.getElementById('selRect');
+  const ocrLoading = document.getElementById('ocrLoading');
+  const ocrStatus = document.getElementById('ocrStatus');
+  const ocrBar = document.getElementById('ocrBar');
+
+  let sourceCanvas = null; // 当前待框选的原图（原始分辨率）
+
+  /* ================= 基础功能 ================= */
+  function countLines(text) {
+    return text === '' ? 0 : text.split('\n').length;
+  }
+  const copyBtn = document.getElementById('copyBtn');
+
+  function updateCounts() {
+    outputCount.textContent = countLines(output.value);
+    copyBtn.disabled = output.value.trim() === '';
+  }
+  input.addEventListener('input', updateCounts);
+  updateCounts();
+
+  document.getElementById('reverseBtn').addEventListener('click', () => {
+    // 空行按原位置镜像保留，仅忽略末尾换行
+    const lines = input.value.replace(/\n+$/, '').split('\n');
+    lines.reverse();
+    output.value = lines.join('\n');
+    updateCounts();
+  });
+
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    input.value = '';
+    output.value = '';
+    updateCounts();
+    input.focus();
+  });
+
+  let toastTimer = null;
+  function showToast(msg, duration = 1800) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
+  }
+
+  document.getElementById('copyBtn').addEventListener('click', async () => {
+    if (!output.value) { showToast('没有可复制的内容'); return; }
+    try {
+      await navigator.clipboard.writeText(output.value);
+    } catch (e) {
+      output.select();
+      document.execCommand('copy');
+    }
+    showToast('已复制到剪贴板 ✓');
+  });
+
+  /* ================= OCR ================= */
+
+  document.getElementById('ocrFileBtn').addEventListener('click', () => {
+    document.getElementById('fileInput').click();
+  });
+
+  document.getElementById('fileInput').addEventListener('change', e => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) loadImageFile(file);
+  });
+
+  function loadImageFile(file) {
+    if (!file.type.startsWith('image/')) { showToast('请选择图片文件'); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      openSelector(canvas);
+    };
+    img.src = url;
+  }
+
+  // 全局粘贴图片 → OCR
+  document.addEventListener('paste', e => {
+    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+    if (item) {
+      e.preventDefault();
+      loadImageFile(item.getAsFile());
+    }
+  });
+
+  /* ---- 框选交互 ---- */
+  function openSelector(canvas) {
+    sourceCanvas = canvas;
+    // 图片按窗口等比缩放显示
+    const scale = Math.min(
+      window.innerWidth / canvas.width,
+      window.innerHeight / canvas.height,
+      1
+    );
+    const w = Math.round(canvas.width * scale);
+    const h = Math.round(canvas.height * scale);
+    overlayImg.src = canvas.toDataURL('image/png');
+    overlayImg.style.width = w + 'px';
+    overlayImg.style.height = h + 'px';
+    overlayImg.style.left = Math.round((window.innerWidth - w) / 2) + 'px';
+    overlayImg.style.top = Math.round((window.innerHeight - h) / 2) + 'px';
+    selRect.style.display = 'none';
+    overlay.classList.add('active');
+  }
+
+  function closeSelector() {
+    overlay.classList.remove('active');
+    sourceCanvas = null;
+  }
+
+  let dragging = false, startX = 0, startY = 0;
+
+  overlay.addEventListener('mousedown', e => {
+    if (e.target.id === 'overlayCancel') return;
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    selRect.style.display = 'block';
+    selRect.style.left = startX + 'px';
+    selRect.style.top = startY + 'px';
+    selRect.style.width = '0px';
+    selRect.style.height = '0px';
+  });
+
+  overlay.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const x = Math.min(startX, e.clientX);
+    const y = Math.min(startY, e.clientY);
+    const w = Math.abs(e.clientX - startX);
+    const h = Math.abs(e.clientY - startY);
+    selRect.style.left = x + 'px';
+    selRect.style.top = y + 'px';
+    selRect.style.width = w + 'px';
+    selRect.style.height = h + 'px';
+  });
+
+  overlay.addEventListener('mouseup', e => {
+    if (!dragging) return;
+    dragging = false;
+    const x = Math.min(startX, e.clientX);
+    const y = Math.min(startY, e.clientY);
+    const w = Math.abs(e.clientX - startX);
+    const h = Math.abs(e.clientY - startY);
+    if (w < 10 || h < 10) {
+      selRect.style.display = 'none';
+      return; // 误触，忽略
+    }
+    const crop = cropSelection(x, y, w, h);
+    closeSelector();
+    if (crop) runOCR(crop);
+  });
+
+  document.getElementById('overlayCancel').addEventListener('click', closeSelector);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && overlay.classList.contains('active')) closeSelector();
+  });
+
+  // 把屏幕上的选区换算回原图坐标并裁剪
+  function cropSelection(sx, sy, sw, sh) {
+    const rect = overlayImg.getBoundingClientRect();
+    const ratioX = sourceCanvas.width / rect.width;
+    const ratioY = sourceCanvas.height / rect.height;
+    const dx = Math.max(0, Math.round((sx - rect.left) * ratioX));
+    const dy = Math.max(0, Math.round((sy - rect.top) * ratioY));
+    const dw = Math.min(sourceCanvas.width - dx, Math.round(sw * ratioX));
+    const dh = Math.min(sourceCanvas.height - dy, Math.round(sh * ratioY));
+    if (dw <= 5 || dh <= 5) return null;
+    const crop = document.createElement('canvas');
+    crop.width = dw;
+    crop.height = dh;
+    crop.getContext('2d').drawImage(sourceCanvas, dx, dy, dw, dh, 0, 0, dw, dh);
+    return crop;
+  }
+
+  /* ---- Tesseract 识别 ---- */
+  async function runOCR(canvas) {
+    ocrLoading.classList.add('active');
+    ocrBar.style.width = '0%';
+    ocrStatus.textContent = '正在加载识别引擎…';
+    try {
+      const { data } = await Tesseract.recognize(canvas, 'chi_sim+eng', {
+        logger: m => {
+          if (m.status === 'recognizing text') {
+            ocrStatus.textContent = '正在识别文字…';
+            ocrBar.style.width = Math.round(m.progress * 100) + '%';
+          } else if (m.progress !== undefined) {
+            ocrBar.style.width = Math.round(m.progress * 100) + '%';
+          }
+        }
+      });
+      const text = (data.text || '').replace(/\r\n/g, '\n').trim();
+      ocrLoading.classList.remove('active');
+      if (!text) {
+        showToast('未识别到文字，请重试或框选更清晰的区域', 3000);
+        return;
+      }
+      // 追加到输入框（已有内容则换行追加）
+      input.value = input.value.trim() ? input.value.replace(/\n*$/, '') + '\n' + text : text;
+      updateCounts();
+      showToast('识别完成，已填入输入框 ✓');
+      input.focus();
+    } catch (err) {
+      ocrLoading.classList.remove('active');
+      console.error(err);
+      showToast('识别失败：' + (err.message || err), 3000);
+    }
+  }
+</script>
+</body>
+</html>
